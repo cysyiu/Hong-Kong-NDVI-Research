@@ -6,7 +6,7 @@
     <title>Hong Kong NDVI Analysis with Dynamic Drawing</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
     <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB53Fs2INgnWoTVmeASagPxhM1Gmyd-pxg&libraries=drawing"></script>
-    <script src="https://earthengine.googleapis.com/earthengine-api/latest/ee_api_js.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/earthengine-api@0.1.406/dist/ee_api_js.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -81,7 +81,7 @@
                     return;
                 }
                 ee.data.authenticateViaOauth(
-                    '187802490480-l82pn81iilk1ms52d7f446dqenfoua49.apps.googleusercontent.com', // Replace with your GEE OAuth 2.0 Client ID
+                    'YOUR_GEE_CLIENT_ID', // Replace with your GEE OAuth 2.0 Client ID
                     () => {
                         ee.initialize(null, null, () => {
                             console.log('GEE initialized successfully');
