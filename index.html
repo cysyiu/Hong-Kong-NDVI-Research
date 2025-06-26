@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hong Kong NDVI Analysis with Dynamic Drawing</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB53Fs2INgnWoTVmeASagPxhM1Gmyd-pxg&libraries=drawing"></script>
+    <script src="https://earthengine.googleapis.com/earthengine-api/latest/ee_api_js.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        #map {
+            flex: 1;
+            height: 60vh;
+        }
+        #controls {
+            padding: 10px;
+            background: #f4f4f4;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        #chart-container {
+            height: 30vh;
+            padding: 10px;
+        }
+        select, button {
+            padding: 5px;
+            font-size: 16px;
+        }
+        canvas {
+            max-height: 100%;
+        }
+        #error-message {
+            color: red;
+            padding: 10px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="error-message"></div>
+    <div id="controls">
+        <label for="year-select">Select Year:</label>
+        <select id="year-select">
+            <option value="2020">2020</option>
+            <option value="2021">2021</option>
+            <option value="2022">2022</option>
+            <option value="2023">2023</option>
+            <option value="2024">2024</option>
+        </select>
+        <button onclick="updateNDVI()">Update NDVI</button>
+        <span>Draw a polygon on the map to select the study region</span>
+    </div>
+    <div id="map"></div>
+    <div id="chart-container">
+        <canvas id="ndvi-chart"></canvas>
+    </div>
+
+    <script>
+        // Display error messages
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.style.display = 'block';
+            errorDiv.textContent = message;
+        }
+
+        // Authenticate with Google Earth Engine
+        function authenticate() {
+            return new Promise((resolve, reject) => {
+                if (typeof ee === 'undefined') {
+                    showError('Google Earth Engine API failed to load. Check network不动connection or browser extensions.');
+                    reject(new Error('EE API not loaded'));
+                    return;
+                }
+                ee.data.authenticateViaOauth(
+                    'YOUR_GEE_CLIENT_ID', // Replace with your GEE OAuth 2.0 Client ID
+                    () => {
+                        ee.initialize(null, null, () => {
+                            console.log('GEE initialized successfully');
+                            resolve();
+                        }, (error) => {
+                            console.error('GEE initialization failed:', error);
+                            showError('Failed to initialize Google Earth Engine: ' + error);
+                            reject(error);
+                        });
+                    },
+                    (error) => {
+                        console.error('Authentication failed:', error);
+                        showError('Authentication failed: ' + error + '. Please ensure your Google account is registered with Earth Engine.');
+                        reject(error);
+                    },
+                    null,
+                    ['https://www.googleapis.com/auth/earthengine']
+                );
+            });
+        }
+
+        // Map initialization
+        var map = new google.maps.Map(document.getElementById('map'), {
+            center: {lat: 22.3193, lng: 114.1694},
+            zoom: 10
+        });
+
+        // Initialize Drawing Manager
+        var drawingManager = new google.maps.drawing.DrawingManager({
+            drawingMode: google.maps.drawing.OverlayType.POLYGON,
+            drawingControl: true,
+            drawingControlOptions: {
+                position: google.maps.ControlPosition.TOP_CENTER,
+                drawingModes: ['polygon']
+            },
+            polygonOptions: {
+                editable: true,
+                draggable: true
+            }
+        });
+        drawingManager.setMap(map);
+
+        // Store the current polygon
+        var currentPolygon = null;
+
+        // Handle polygon completion
+        google.maps.event.addListener(drawingManager, 'polygoncomplete', function(polygon) {
+            if (currentPolygon) {
+                currentPolygon.setMap(null); // Remove previous polygon
+            }
+            currentPolygon = polygon;
+        });
+
+        // Initialize Chart.js
+        var ctx = document.getElementById('ndvi-chart').getContext('2d');
+        var ndviChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+                datasets: [{
+                    label: 'Monthly NDVI',
+                    data: [],
+                    borderColor: 'green',
+                    fill: false
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: false, min: -1, max: 1 }
+                }
+            }
+        });
+
+        // Function to convert Google Maps polygon to EE geometry
+        function polygonToEEGeometry(polygon) {
+            var coordinates = polygon.getPath().getArray().map(function(coord) {
+                return [coord.lng(), coord.lat()];
+            });
+            coordinates.push(coordinates[0]); // Close the polygon
+            return ee.Geometry.Polygon([coordinates]);
+        }
+
+        // Function to calculate NDVI
+        var addNDVI = function(image) {
+            var ndvi = image.expression("(Nir-Red)/(Nir+Red)", {
+                Nir: image.select("B8"),
+                Red: image.select("B4")
+            }).rename('NDVI');
+            return image.addBands(ndvi);
+        };
+
+        // Function to update NDVI and chart
+        function updateNDVI() {
+            if (!currentPolygon) {
+                showError('Please draw a polygon on the map to select a study region.');
+                return;
+            }
+
+            var region = polygonToEEGeometry(currentPolygon);
+            var year = document.getElementById('year-select').value;
+
+            // Filter Sentinel-2 images
+            var S2_image = ee.ImageCollection('COPERNICUS/S2')
+                .filterDate(year + '-01-01', year + '-12-31')
+                .filterBounds(region)
+                .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', 50));
+
+            // Calculate monthly NDVI
+            var monthlyNDVI = ee.ImageCollection.fromImages(
+                ee.List.sequence(1, 12).map(function(month) {
+                    var start = ee.Date.fromYMD(parseInt(year), month, 1);
+                    var end = start.advance(1, 'month');
+                    var monthlyImages = S2_image.filterDate(start, end);
+                    var meanNDVI = monthlyImages.map(addNDVI).select('NDVI').mean().clip(region);
+                    return meanNDVI.set('month', month);
+                })
+            );
+
+            // Clear previous layers
+            map.overlayMapTypes.clear();
+
+            // Display NDVI for first month
+            var ndviImage = monthlyNDVI.filterMetadata('month', 'equals', 1).first().select('NDVI');
+            ndviImage.getMap({min: -1, max: 1, palette: ['red', 'white', 'green']}, function(mapId) {
+                var layer = new google.maps.ImageMapType({
+                    getTileUrl: function(coord, zoom) {
+                        return mapId.getTileUrl(coord, zoom);
+                    },
+                    tileSize: new google.maps.Size(256, 256)
+                });
+                map.overlayMapTypes.push(layer);
+            });
+
+            // Calculate NDVI trend for chart
+            var ndviTrend = monthlyNDVI.map(function(image) {
+                var stats = image.reduceRegion({
+                    reducer: ee.Reducer.mean(),
+                    geometry: region,
+                    scale: 30
+                });
+                return ee.Feature(null, {ndvi: stats.get('NDVI'), month: image.get('month')});
+            });
+
+            ee.data.computeFeatures({
+                expression: ndviTrend,
+                callback: function(features) {
+                    var ndviValues = Array(12).fill(null);
+                    features.forEach(function(f) {
+                        var month = f.properties.month - 1;
+                        var ndvi = f.properties.ndvi || 0;
+                        ndviValues[month] = ndvi;
+                    });
+                    ndviChart.data.datasets[0].data = ndviValues;
+                    ndviChart.update();
+                },
+                error: function(error) {
+                    console.error('Error computing NDVI trend:', error);
+                    showError('Failed to compute NDVI trend: ' + error);
+                }
+            });
+        }
+
+        // Initialize GEE and run NDVI calculation
+        authenticate().then(() => {
+            // Initial NDVI update will wait for user to draw a polygon
+            console.log('GEE initialized, waiting for user to draw a polygon');
+        }).catch((error) => {
+            console.error('Initialization error:', error);
+            showError('Failed to initialize Google Earth Engine: ' + error + '. Please check your Client ID, network, or try signing in again.');
+        });
+    </script>
+</body>
+</html>
